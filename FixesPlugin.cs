@@ -8,7 +8,7 @@ using MelonLoader;
 using System.Reflection;
 using System.Reflection.Emit;
 
-[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.0", "North")]
+[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.1", "North")]
 [assembly: MelonGame("Floodgate Crew", "Blacksmith Ignite the Forge")]
 
 namespace IgniteTheForgeFixes {
@@ -212,6 +212,31 @@ namespace IgniteTheForgeFixes {
             codes.InsertRange(0, injectedCodes);
 
             FixesPlugin.Log.Msg("MultiplyGoldGainedPatch.OnSignal patched.");
+
+            return codes;
+        }
+    }
+
+    [HarmonyPatch(typeof(ChangeCritDamageModifierBattleEventEffect), "EffectOnTarget")]
+    public static class ChangeCritDamageModifierBattleEventEffectPatch {
+        public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
+            List<CodeInstruction> codes = new(instructions);
+
+            for (int i = 0; i < codes.Count; i++) {
+                // find the instructions for _critDamagePercentageChange * _previousCritDamageModifier
+                if (codes[i].opcode == OpCodes.Ldfld && codes[i].operand?.ToString().Contains("_critDamagePercentageChange") == true) {
+                    // remove the multiplication since the value is already a percentage multiplier
+                    if (i + 3 < codes.Count && codes[i + 3].opcode == OpCodes.Mul) {
+                        // ldarg.0
+                        // ldfld _previousCritDamageModifier
+                        // mul
+                        codes.RemoveRange(i + 1, 3);
+
+                        FixesPlugin.Log.Msg("ChangeCritDamageModifierBattleEventEffect.EffectOnTarget patched.");
+                        break;
+                    }
+                }
+            }
 
             return codes;
         }
