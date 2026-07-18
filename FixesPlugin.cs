@@ -9,7 +9,7 @@ using MelonLoader;
 using System.Reflection;
 using System.Reflection.Emit;
 
-[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.2", "North")]
+[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.3", "North")]
 [assembly: MelonGame("Floodgate Crew", "Blacksmith Ignite the Forge")]
 
 namespace IgniteTheForgeFixes {
@@ -170,7 +170,7 @@ namespace IgniteTheForgeFixes {
             for (int i = 0; i < codes.Count; i++) {
                 if (codes[i].opcode == OpCodes.Ldfld && codes[i].operand is FieldInfo fInfo && fInfo == randomChanceField) {
 
-                    codes.InsertRange(i + 1, new [] {
+                    codes.InsertRange(i + 1, new[] {
                         new CodeInstruction(OpCodes.Ldarg_0),
                         new CodeInstruction(OpCodes.Ldfld, ownerField),
                         new CodeInstruction(OpCodes.Callvirt, luckGetter),
@@ -241,7 +241,7 @@ namespace IgniteTheForgeFixes {
             codes[0].labels.Add(continueOriginalMethod);
 
             // generate code for "if (_owner != signal.Target) return;"
-            codes.InsertRange(0, new [] {
+            codes.InsertRange(0, new[] {
                 new CodeInstruction(OpCodes.Ldarg_0),                                 // Load 'this'
                 new CodeInstruction(OpCodes.Ldfld, ownerField),                       // Load 'this._owner'
                 new CodeInstruction(OpCodes.Ldarg_1),                                 // Load 'signal'
@@ -274,6 +274,38 @@ namespace IgniteTheForgeFixes {
                         FixesPlugin.Log.Msg("ChangeCritDamageModifierBattleEventEffect.EffectOnTarget patched.");
                         break;
                     }
+                }
+            }
+
+            return codes;
+        }
+    }
+
+    [HarmonyPatch(typeof(Unit), "Attack")]
+    public static class UnitAttackPatch {
+        [HarmonyTranspiler]
+        public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
+            MethodInfo critChanceGetter = AccessTools.PropertyGetter(typeof(Unit), "CritChance");
+            MethodInfo luckModifierGetter = AccessTools.PropertyGetter(typeof(Unit), "LuckModifier");
+
+            if (critChanceGetter == null || luckModifierGetter == null) {
+                MelonLogger.Error("Failed to resolve property getters for Unit patch.");
+                return instructions;
+            }
+
+            List<CodeInstruction> codes = new(instructions);
+
+            for (int i = 0; i < codes.Count - 2; i++) {
+                if (codes[i].opcode == OpCodes.Call && codes[i].operand as MethodInfo == critChanceGetter
+                    && codes[i + 1].opcode == OpCodes.Ldc_R4
+                ) {
+                    codes[i + 1].opcode = OpCodes.Ldarg_0;
+                    codes[i + 1].operand = null;
+
+                    codes.Insert(i + 2, new CodeInstruction(OpCodes.Call, luckModifierGetter));
+
+                    FixesPlugin.Log.Msg("Unit.Attack patched.");
+                    break;
                 }
             }
 
