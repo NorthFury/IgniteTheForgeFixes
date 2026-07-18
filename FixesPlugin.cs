@@ -2,18 +2,65 @@
 using Gameplay.Battle.API.Signals;
 using Gameplay.Battle.API.Statuses;
 using Gameplay.Battle.API.Statuses.BattleEvents;
+using Gameplay.Battle.Implementation;
 using Gameplay.Battle.Implementation.BattleEvents.Effects;
 using HarmonyLib;
 using MelonLoader;
 using System.Reflection;
 using System.Reflection.Emit;
 
-[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.1", "North")]
+[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.2", "North")]
 [assembly: MelonGame("Floodgate Crew", "Blacksmith Ignite the Forge")]
 
 namespace IgniteTheForgeFixes {
     public class FixesPlugin : MelonMod {
         internal static MelonLogger.Instance Log => Melon<FixesPlugin>.Logger;
+
+        public override void OnInitializeMelon() {
+            var transpilerMethod = new HarmonyMethod(typeof(LuckModifierPatch).GetMethod(nameof(LuckModifierPatch.Transpiler)));
+
+            List<MethodInfo> targetsToPatch = new() {
+                AccessTools.Method(typeof(RandomEffectCalculator), "EffectHappens"),
+                AccessTools.Method(typeof(ApplyStatusToAttackerOnBeingHitEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(ApplyStatusToTargetHitEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(ApplyStatusToTargetOnSuccessfulAOEAttackEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(ApplyStatusToTargetOnSuccessfulAttackEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(ApplyStatusToTargetOnSuccessfulCriticalAttackHitEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(ApplyStatusWhenApplyingOtherStatusEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(DealDamageToRandomEnemyAndApplyStatusEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(DealDamageToRandomEnemyAndNeighboursEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(DealDamageToTargetAndNeighboursEffect), "EffectOnTarget"),
+                AccessTools.Method(typeof(ApplyStatusToAlliesOnGainingItEffect), "OnSignal"),
+                AccessTools.Method(typeof(ApplyStatusToSummonedUnitEffect), "OnSignal"),
+            };
+
+            foreach (MethodInfo target in targetsToPatch) {
+                if (target != null) {
+                    HarmonyInstance.Patch(target, transpiler: transpilerMethod);
+                }
+            }
+        }
+    }
+
+    public static class LuckModifierPatch {
+        public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
+            List<CodeInstruction> codes = new(instructions);
+
+            for (int i = 0; i < codes.Count; i++) {
+                if (codes[i].opcode == OpCodes.Mul) {
+                    codes[i].opcode = OpCodes.Add;
+
+                    // luck modifier is 1.1 for 10% extra luck; remove 1 to only add 0.1
+                    codes.Insert(i + 1, new CodeInstruction(OpCodes.Ldc_R4, 1.0f));
+                    codes.Insert(i + 2, new CodeInstruction(OpCodes.Sub));
+
+                    FixesPlugin.Log.Msg("LuckModifier patched.");
+                    break;
+                }
+            }
+
+            return codes;
+        }
     }
 
     [HarmonyPatch(typeof(KillTargetOnHitEffect), "EffectOnTarget")]
@@ -77,14 +124,18 @@ namespace IgniteTheForgeFixes {
 
             for (int i = 0; i < codes.Count; i++) {
                 if (codes[i].opcode == OpCodes.Ldfld && (FieldInfo)codes[i].operand == chanceField) {
-                    // change (_chanceToActivate) to (_chanceToActivate * _owner.LuckModifier)
-                    codes.Insert(i + 1, new CodeInstruction(OpCodes.Ldarg_0));
-                    codes.Insert(i + 2, new CodeInstruction(OpCodes.Ldfld, ownerField));
-                    codes.Insert(i + 3, new CodeInstruction(OpCodes.Callvirt, luckGetter));
-                    codes.Insert(i + 4, new CodeInstruction(OpCodes.Mul));
+                    // change (_chanceToActivate) to (_chanceToActivate + _owner.LuckModifier - 1.0f)
+                    codes.InsertRange(i + 1, new[] {
+                        new CodeInstruction(OpCodes.Ldarg_0),
+                        new CodeInstruction(OpCodes.Ldfld, ownerField),
+                        new CodeInstruction(OpCodes.Callvirt, luckGetter),
+                        new CodeInstruction(OpCodes.Add),
+                        new CodeInstruction(OpCodes.Ldc_R4, 1.0f),
+                        new CodeInstruction(OpCodes.Sub)
+                    });
 
-                    i += 4;
                     FixesPlugin.Log.Msg("BlizzardEffect.OnUnitTurnStarted patched.");
+                    break;
                 }
             }
 
@@ -105,38 +156,28 @@ namespace IgniteTheForgeFixes {
             bool patchedLoop = false;
             bool patchedCondition = false;
 
-            // Patch the loop logic: num -= _effectConfig.BonusChancePerStatusTime * (float)battleEvent.Stacks * _owner.LuckModifier;
+            // change the addition to subtraction
             for (int i = 0; i < codes.Count - 1; i++) {
                 if (codes[i].opcode == OpCodes.Mul && codes[i + 1].opcode == OpCodes.Add) {
                     codes[i + 1].opcode = OpCodes.Sub;
-
-                    List<CodeInstruction> loopInjection = new() {
-                        new(OpCodes.Ldarg_0),
-                        new(OpCodes.Ldfld, ownerField),
-                        new(OpCodes.Callvirt, luckGetter),
-                        new(OpCodes.Mul)
-                    };
-
-                    // Insert the elements directly between the original Mul and our freshly changed Sub
-                    codes.InsertRange(i + 1, loopInjection);
 
                     patchedLoop = true;
                     break;
                 }
             }
 
-            // Patch the branch condition: _effectConfig.RandomChance * _owner.LuckModifier
+            // include the luck modifer in the check: _effectConfig.RandomChance + _owner.LuckModifier
             for (int i = 0; i < codes.Count; i++) {
                 if (codes[i].opcode == OpCodes.Ldfld && codes[i].operand is FieldInfo fInfo && fInfo == randomChanceField) {
-                    List<CodeInstruction> conditionInjection = new() {
-                        new(OpCodes.Ldarg_0),
-                        new(OpCodes.Ldfld, ownerField),
-                        new(OpCodes.Callvirt, luckGetter),
-                        new(OpCodes.Mul)
-                    };
 
-                    // Insert immediately after RandomChance is pushed onto the evaluation stack
-                    codes.InsertRange(i + 1, conditionInjection);
+                    codes.InsertRange(i + 1, new [] {
+                        new CodeInstruction(OpCodes.Ldarg_0),
+                        new CodeInstruction(OpCodes.Ldfld, ownerField),
+                        new CodeInstruction(OpCodes.Callvirt, luckGetter),
+                        new CodeInstruction(OpCodes.Add),
+                        new CodeInstruction(OpCodes.Ldc_R4, 1.0f),
+                        new CodeInstruction(OpCodes.Sub)
+                    });
 
                     patchedCondition = true;
                     break;
@@ -200,16 +241,14 @@ namespace IgniteTheForgeFixes {
             codes[0].labels.Add(continueOriginalMethod);
 
             // generate code for "if (_owner != signal.Target) return;"
-            var injectedCodes = new List<CodeInstruction> {
-                new(OpCodes.Ldarg_0),                                 // Load 'this'
-                new(OpCodes.Ldfld, ownerField),                       // Load 'this._owner'
-                new(OpCodes.Ldarg_1),                                 // Load 'signal'
-                new(OpCodes.Ldfld, targetField),                      // Load 'signal.Target'
-                new(OpCodes.Beq_S, continueOriginalMethod),           // If equal, jump to original start
-                new(OpCodes.Ret)                                      // Else, return early
-            };
-
-            codes.InsertRange(0, injectedCodes);
+            codes.InsertRange(0, new [] {
+                new CodeInstruction(OpCodes.Ldarg_0),                                 // Load 'this'
+                new CodeInstruction(OpCodes.Ldfld, ownerField),                       // Load 'this._owner'
+                new CodeInstruction(OpCodes.Ldarg_1),                                 // Load 'signal'
+                new CodeInstruction(OpCodes.Ldfld, targetField),                      // Load 'signal.Target'
+                new CodeInstruction(OpCodes.Beq_S, continueOriginalMethod),           // If equal, jump to original start
+                new CodeInstruction(OpCodes.Ret)                                      // Else, return early
+            });
 
             FixesPlugin.Log.Msg("MultiplyGoldGainedPatch.OnSignal patched.");
 
@@ -222,7 +261,7 @@ namespace IgniteTheForgeFixes {
         public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
             List<CodeInstruction> codes = new(instructions);
 
-            for (int i = 0; i < codes.Count; i++) {
+            for (int i = 0; i < codes.Count - 3; i++) {
                 // find the instructions for _critDamagePercentageChange * _previousCritDamageModifier
                 if (codes[i].opcode == OpCodes.Ldfld && codes[i].operand?.ToString().Contains("_critDamagePercentageChange") == true) {
                     // remove the multiplication since the value is already a percentage multiplier
