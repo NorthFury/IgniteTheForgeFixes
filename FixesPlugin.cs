@@ -9,7 +9,7 @@ using MelonLoader;
 using System.Reflection;
 using System.Reflection.Emit;
 
-[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.3", "North")]
+[assembly: MelonInfo(typeof(IgniteTheForgeFixes.FixesPlugin), "Fixes", "1.0.4", "North")]
 [assembly: MelonGame("Floodgate Crew", "Blacksmith Ignite the Forge")]
 
 namespace IgniteTheForgeFixes {
@@ -77,13 +77,17 @@ namespace IgniteTheForgeFixes {
 
             var codes = new List<CodeInstruction>(instructions);
             for (int i = 0; i < codes.Count; i++) {
-                if (codes[i].opcode == OpCodes.Ldfld &&
-                    codes[i].operand is FieldInfo field &&
-                    field.Name == "_bonusHealthThresholdPerStatus") {
+                if (codes[i].opcode == OpCodes.Ldfld
+                    && codes[i].operand is FieldInfo field
+                    && field.Name == "_bonusHealthThresholdPerStatus"
+                ) {
 
                     CodeInstruction ldlocItemInstruction = null;
                     for (int j = i - 1; j >= 1; j--) {
-                        if (codes[j].opcode == OpCodes.Callvirt && (MethodInfo)codes[j].operand == getConfigMethod && codes[j - 1].IsLdloc()) {
+                        if (codes[j].opcode == OpCodes.Callvirt
+                            && (MethodInfo)codes[j].operand == getConfigMethod
+                            && codes[j - 1].IsLdloc()
+                        ) {
                             ldlocItemInstruction = codes[j - 1].Clone();
                             break;
                         }
@@ -201,7 +205,10 @@ namespace IgniteTheForgeFixes {
             var codes = new List<CodeInstruction>(instructions);
 
             for (int i = 1; i < codes.Count - 1; i++) {
-                if (codes[i - 1].opcode == OpCodes.Add && codes[i].opcode == OpCodes.Neg && codes[i + 1].opcode == OpCodes.Conv_I4) {
+                if (codes[i - 1].opcode == OpCodes.Add
+                    && codes[i].opcode == OpCodes.Neg
+                    && codes[i + 1].opcode == OpCodes.Conv_I4
+                ) {
                     codes[i].opcode = OpCodes.Nop;
                     FixesPlugin.Log.Msg("AttackAllOnCritEffect.EffectOnTarget patched.");
                     break;
@@ -296,7 +303,8 @@ namespace IgniteTheForgeFixes {
             List<CodeInstruction> codes = new(instructions);
 
             for (int i = 0; i < codes.Count - 2; i++) {
-                if (codes[i].opcode == OpCodes.Call && codes[i].operand as MethodInfo == critChanceGetter
+                if (codes[i].opcode == OpCodes.Call
+                    && codes[i].operand as MethodInfo == critChanceGetter
                     && codes[i + 1].opcode == OpCodes.Ldc_R4
                 ) {
                     codes[i + 1].opcode = OpCodes.Ldarg_0;
@@ -305,6 +313,50 @@ namespace IgniteTheForgeFixes {
                     codes.Insert(i + 2, new CodeInstruction(OpCodes.Call, luckModifierGetter));
 
                     FixesPlugin.Log.Msg("Unit.Attack patched.");
+                    break;
+                }
+            }
+
+            return codes;
+        }
+    }
+
+    [HarmonyPatch(typeof(Unit), "DealDamage")]
+    public static class UnitDodgePatch {
+        [HarmonyTranspiler]
+        public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions) {
+            MethodInfo dodgeChanceGetter = AccessTools.PropertyGetter(typeof(Unit), "DodgeChance");
+            MethodInfo luckModifierGetter = AccessTools.PropertyGetter(typeof(Unit), "LuckModifier");
+
+            if (dodgeChanceGetter == null || luckModifierGetter == null) {
+                MelonLogger.Error("Failed to resolve property getters for Unit patch.");
+                return instructions;
+            }
+
+            List<CodeInstruction> codes = new(instructions);
+            for (int i = 2; i < codes.Count - 4; i++) {
+                if (codes[i].opcode == OpCodes.Call
+                    && (MethodInfo)codes[i].operand == dodgeChanceGetter
+                    && codes[i + 4].opcode == OpCodes.Brfalse
+                ) {
+                    var label1Target = (Label)codes[i + 4].operand;
+
+                    List<CodeInstruction> instructionsToInject = new() {
+                        new CodeInstruction(OpCodes.Ldarg_0),                             // load 'this'
+                        new CodeInstruction(OpCodes.Call, dodgeChanceGetter),             // call get_DodgeChance()
+                        new CodeInstruction(OpCodes.Ldc_R4, 0.0f),                        // load 0.0f
+                        new CodeInstruction(OpCodes.Ble_Un, label1Target)                 // if DodgeChance <= 0, jump to Label1
+                    };
+
+                    int insertIndex = i - 2;
+                    if (codes[insertIndex].labels.Count > 0) {
+                        instructionsToInject[0].labels.AddRange(codes[insertIndex].labels);
+                        codes[insertIndex].labels.Clear();
+                    }
+
+                    codes.InsertRange(insertIndex, instructionsToInject);
+
+                    FixesPlugin.Log.Msg("Unit.DealDamage patched.");
                     break;
                 }
             }
